@@ -1,11 +1,17 @@
 """
-Aplicación de escritorio: búsqueda ciega en un laberinto (BFS vs DFS)
----------------------------------------------------------------------
-Abre una ventana con dos paneles independientes (BFS y DFS) que resuelven
-el mismo laberinto paso a paso. Solo usa la biblioteca estándar de Python
-(tkinter), no hay que instalar nada.
+Aplicación de escritorio: búsqueda ciega en un laberinto (BFS vs DFS)  -  v3
+----------------------------------------------------------------------------
+Dos paneles independientes (BFS y DFS) resuelven el mismo laberinto paso a paso.
 
-Uso:  python laberinto_app.py
+  - Paso adelante / paso atrás, play y reiniciar en cada panel.
+  - Editar el laberinto con el mouse: clic o arrastre para poner/quitar paredes.
+  - Vista de la estructura de datos (cola FIFO / pila LIFO).
+  - Gráfica de barras comparativa al terminar.
+
+Atajos:  Espacio = play/pausa ambos   → = paso   ← = paso atrás
+         R = reiniciar   N = nuevo laberinto
+
+Solo usa la biblioteca estándar (tkinter). Uso:  python laberinto_app_v3.py
 """
 import random
 import tkinter as tk
@@ -13,8 +19,8 @@ from collections import deque
 from tkinter import ttk
 
 DIRS = [(-1, 0), (0, 1), (1, 0), (0, -1)]
-TAM_CANVAS = 460
 
+# Colores del laberinto (sin cambios)
 COLORES = {
     "pared": "#1f2937",
     "libre": "#ffffff",
@@ -26,8 +32,18 @@ COLORES = {
     "meta": "#dc2626",
 }
 
-# pasos por "tick" y retardo (ms) según la velocidad 1..10
-PASOS = [1, 1, 2, 3, 5, 8, 12, 20, 35, 60]
+# Colores de la interfaz
+BG = "#f3f4f6"
+CARD = "#ffffff"
+SOFT = "#f3f4f6"
+BORDE = "#e5e7eb"
+TEXTO = "#111827"
+GRIS = "#6b7280"
+OK = "#15803d"
+ERROR = "#b91c1c"
+FUENTE = "Segoe UI"
+
+PASOS = [1, 1, 2, 3, 5, 8, 12, 20, 35, 60]   # pasos por "tick" según velocidad 1..10
 
 
 def retardo(v):
@@ -35,7 +51,7 @@ def retardo(v):
 
 
 # ------------------------------------------------------------ laberinto
-def generar(n, prob_aperturas=0.08):
+def generar(n, prob_aperturas=0.08, rnd=random):
     """Laberinto n x n (n impar): backtracking recursivo + paredes abiertas
     al azar para que existan varios caminos."""
     lab = [[1] * n for _ in range(n)]
@@ -49,7 +65,7 @@ def generar(n, prob_aperturas=0.08):
             if 0 < nf < n - 1 and 0 < nc < n - 1 and lab[nf][nc] == 1:
                 vec.append((nf, nc, f + df, c + dc))
         if vec:
-            nf, nc, pf, pc = random.choice(vec)
+            nf, nc, pf, pc = rnd.choice(vec)
             lab[pf][pc] = 0
             lab[nf][nc] = 0
             pila.append((nf, nc))
@@ -57,15 +73,15 @@ def generar(n, prob_aperturas=0.08):
             pila.pop()
     for f in range(1, n - 1):
         for c in range(1, n - 1):
-            if lab[f][c] == 1 and random.random() < prob_aperturas:
+            if lab[f][c] == 1 and rnd.random() < prob_aperturas:
                 lab[f][c] = 0
     return lab
 
 
 # --------------------------------------------------------------- búsqueda
 class Solver:
-    """Búsqueda ciega que avanza de un nodo en un nodo.
-    BFS: frontera = cola (FIFO). DFS: frontera = pila (LIFO)."""
+    """Búsqueda ciega que avanza un nodo por vez.
+    BFS: frontera = cola (FIFO).  DFS: frontera = pila (LIFO)."""
 
     def __init__(self, lab, algoritmo):
         self.lab = lab
@@ -83,6 +99,13 @@ class Solver:
         self.actual = None
         self.terminado = False
         self.camino = None
+
+    def proximos(self, k=5):
+        """Primeros k nodos en salir de la frontera (el primero sale ahora)."""
+        f = self.frontera
+        if self.algo == "BFS":
+            return [f[i] for i in range(min(k, len(f)))]
+        return [f[-i] for i in range(1, min(k, len(f)) + 1)]
 
     def paso(self):
         if self.terminado:
@@ -112,54 +135,115 @@ class Solver:
             self.terminado = True
 
 
+# ------------------------------------------------------------ estilos / widgets
+def configurar_estilos(root):
+    st = ttk.Style(root)
+    st.theme_use("clam")
+    root.configure(bg=BG)
+    # sin anillo de foco punteado en los botones
+    st.layout("TButton", [("Button.border", {"sticky": "nswe", "children": [
+        ("Button.padding", {"sticky": "nswe", "children": [
+            ("Button.label", {"sticky": "nswe"})]})]})])
+    st.configure("TButton", font=(FUENTE, 10), padding=(12, 7), relief="flat",
+                 borderwidth=0, background="#e5e7eb", foreground=TEXTO)
+    st.map("TButton",
+           background=[("disabled", "#f3f4f6"), ("pressed", "#c7cbd1"), ("active", "#d5d9df")],
+           foreground=[("disabled", "#b0b5bd")])
+    st.configure("Primary.TButton", font=(FUENTE, 10, "bold"), background=COLORES["camino"],
+                 foreground="#ffffff")
+    st.map("Primary.TButton",
+           background=[("disabled", "#bfdbfe"), ("pressed", "#1e3a8a"), ("active", "#1d4ed8")],
+           foreground=[("disabled", "#ffffff")])
+    st.configure("TCombobox", padding=4)
+    st.configure("Horizontal.TScale", background=BG, troughcolor="#d1d5db")
+
+
+def boton(padre, texto, comando, primario=False, **kw):
+    b = ttk.Button(padre, text=texto, command=comando, cursor="hand2",
+                   style="Primary.TButton" if primario else "TButton", **kw)
+    return b
+
+
+def estadistica(padre, titulo):
+    """Mini tarjeta con título pequeño y valor grande. Devuelve (frame, StringVar)."""
+    f = tk.Frame(padre, bg=SOFT, padx=10, pady=5)
+    tk.Label(f, text=titulo, bg=SOFT, fg=GRIS, font=(FUENTE, 8)).pack(anchor="w")
+    v = tk.StringVar()
+    tk.Label(f, textvariable=v, bg=SOFT, fg=TEXTO, font=(FUENTE, 13, "bold")).pack(anchor="w")
+    return f, v
+
+
 # ------------------------------------------------------------------- panel
-class Panel(ttk.LabelFrame):
-    def __init__(self, app, algo, titulo, descripcion):
-        super().__init__(app.root, text=titulo, padding=8)
+class Panel(tk.Frame):
+    def __init__(self, app, algo, titulo, descripcion, acento):
+        super().__init__(app.root, bg=CARD, highlightbackground=BORDE, highlightthickness=1)
         self.app = app
         self.algo = algo
         self.temporizador = None
         self.solver = None
         self.celdas = []
         self.cache = {}
+        self.celda = 10
+        self.tam = app.tam_canvas
 
-        ttk.Label(self, text=descripcion, foreground="#555").pack(anchor="w")
-        self.canvas = tk.Canvas(self, width=TAM_CANVAS, height=TAM_CANVAS,
-                                highlightthickness=1, highlightbackground="#bbb")
-        self.canvas.pack(pady=6)
+        tk.Frame(self, bg=acento, height=4).pack(fill="x")
+        cuerpo = tk.Frame(self, bg=CARD, padx=12, pady=10)
+        cuerpo.pack(fill="both")
 
-        fila = ttk.Frame(self)
-        fila.pack(fill="x")
-        self.b_paso = ttk.Button(fila, text="Paso", command=self.un_paso)
-        self.b_paso.pack(side="left")
-        self.b_play = ttk.Button(fila, text="▶ Play", command=self.alternar)
-        self.b_play.pack(side="left", padx=6)
-        ttk.Button(fila, text="Reiniciar", command=self.reiniciar).pack(side="left")
+        tk.Label(cuerpo, text=titulo, bg=CARD, fg=TEXTO, font=(FUENTE, 12, "bold")).pack(anchor="w")
+        tk.Label(cuerpo, text=descripcion, bg=CARD, fg=GRIS, font=(FUENTE, 9)).pack(anchor="w", pady=(0, 6))
 
-        self.v_exp = tk.StringVar()
-        self.v_fr = tk.StringVar()
+        self.canvas = tk.Canvas(cuerpo, width=self.tam, height=self.tam, bg=CARD,
+                                highlightthickness=1, highlightbackground=BORDE, cursor="hand2")
+        self.canvas.pack(pady=4)
+        self.canvas.bind("<Button-1>", self.clic)
+        self.canvas.bind("<B1-Motion>", self.arrastre)
+
+        fila = tk.Frame(cuerpo, bg=CARD)
+        fila.pack(fill="x", pady=(6, 6))
+        self.b_atras = boton(fila, "◀ Atrás", self.atras)
+        self.b_atras.pack(side="left", expand=True, fill="x")
+        self.b_paso = boton(fila, "Paso ▶", self.un_paso)
+        self.b_paso.pack(side="left", expand=True, fill="x", padx=4)
+        self.b_play = boton(fila, "▶ Play", self.alternar, primario=True)
+        self.b_play.pack(side="left", expand=True, fill="x")
+        boton(fila, "Reiniciar", self.reiniciar).pack(side="left", expand=True, fill="x", padx=(4, 0))
+
+        stats = tk.Frame(cuerpo, bg=CARD)
+        stats.pack(fill="x")
+        f1, self.v_exp = estadistica(stats, "Nodos expandidos")
+        f2, self.v_fr = estadistica(stats, "Frontera actual")
+        f3, self.v_max = estadistica(stats, "Frontera máxima")
+        f1.pack(side="left", expand=True, fill="x")
+        f2.pack(side="left", expand=True, fill="x", padx=4)
+        f3.pack(side="left", expand=True, fill="x")
+
+        self.v_next = tk.StringVar()
+        tk.Label(cuerpo, textvariable=self.v_next, anchor="w", justify="left", height=2,
+                 bg=SOFT, fg="#374151", font=("Consolas", 9), padx=8, pady=3,
+                 wraplength=self.tam - 16).pack(fill="x", pady=(6, 0))
         self.v_msg = tk.StringVar()
-        ttk.Label(self, textvariable=self.v_exp).pack(anchor="w", pady=(8, 0))
-        ttk.Label(self, textvariable=self.v_fr).pack(anchor="w")
-        ttk.Label(self, textvariable=self.v_msg, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 0))
+        self.l_msg = tk.Label(cuerpo, textvariable=self.v_msg, bg=CARD, fg=TEXTO,
+                              font=(FUENTE, 10, "bold"), anchor="w")
+        self.l_msg.pack(fill="x", pady=(6, 0))
 
-    # -- laberinto nuevo
+    # -- laberinto
     def set_laberinto(self, lab):
         self.pausa()
         self.solver = Solver(lab, self.algo)
         n = len(lab)
-        celda = TAM_CANVAS // n
+        self.celda = self.tam // n
+        px = self.celda * n
         self.canvas.delete("all")
-        self.canvas.config(width=celda * n, height=celda * n)
+        self.canvas.config(width=px, height=px)
         self.celdas = []
         self.cache = {}
         for f in range(n):
             fila = []
             for c in range(n):
-                item = self.canvas.create_rectangle(
-                    c * celda, f * celda, (c + 1) * celda, (f + 1) * celda,
-                    fill=COLORES["libre"], outline="")
-                fila.append(item)
+                fila.append(self.canvas.create_rectangle(
+                    c * self.celda, f * self.celda, (c + 1) * self.celda, (f + 1) * self.celda,
+                    fill=COLORES["libre"], outline=""))
             self.celdas.append(fila)
         self.dibujar()
 
@@ -191,16 +275,49 @@ class Panel(ttk.LabelFrame):
                 if self.cache.get((f, c)) != col:
                     self.canvas.itemconfig(self.celdas[f][c], fill=col)
                     self.cache[(f, c)] = col
-        self.v_exp.set(f"Nodos expandidos: {s.expandidos}")
-        self.v_fr.set(f"Frontera actual: {len(s.frontera)}   (máxima: {s.max_frontera})")
-        if s.terminado:
-            self.v_msg.set(f"Meta encontrada. Camino de {len(s.camino) - 1} pasos."
-                           if s.camino else "No hay camino.")
+        self.v_exp.set(str(s.expandidos))
+        self.v_fr.set(str(len(s.frontera)))
+        self.v_max.set(str(s.max_frontera))
+        prox = s.proximos(5)
+        if prox and not s.terminado:
+            lista = " ".join(f"({f},{c})" for f, c in prox)
+            nombre = "Cola (sale el 1.º)" if s.algo == "BFS" else "Pila (sale el tope)"
+            self.v_next.set(f"Sale ahora: ({prox[0][0]},{prox[0][1]})\n{nombre}: {lista} …")
+        else:
+            self.v_next.set("")
+        if s.terminado and s.camino:
+            self.v_msg.set(f"✔ Meta encontrada. Camino de {len(s.camino) - 1} pasos.")
+            self.l_msg.config(fg=OK)
+        elif s.terminado:
+            self.v_msg.set("✘ No hay camino.")
+            self.l_msg.config(fg=ERROR)
         else:
             self.v_msg.set("Buscando…" if s.expandidos else "Listo para comenzar.")
+            self.l_msg.config(fg=GRIS if not s.expandidos else TEXTO)
         estado = "disabled" if s.terminado else "normal"
         self.b_paso.config(state=estado)
         self.b_play.config(state=estado)
+        self.b_atras.config(state="normal" if s.expandidos else "disabled")
+
+    # -- edición con el mouse
+    def _celda_editable(self, e):
+        f, c = e.y // self.celda, e.x // self.celda
+        n = self.solver.n
+        if 1 <= f <= n - 2 and 1 <= c <= n - 2 and (f, c) not in (self.solver.inicio, self.solver.meta):
+            return f, c
+        return None
+
+    def clic(self, e):
+        pos = self._celda_editable(e)
+        if pos:
+            f, c = pos
+            self.app.modo_pintura = 1 if self.solver.lab[f][c] == 0 else 0
+            self.app.pintar(f, c)
+
+    def arrastre(self, e):
+        pos = self._celda_editable(e)
+        if pos:
+            self.app.pintar(*pos)
 
     # -- control
     def avanzar(self, k):
@@ -211,11 +328,21 @@ class Panel(ttk.LabelFrame):
         self.dibujar()
         if self.solver.terminado:
             self.pausa()
-            self.app.resumen()
+            self.app.actualizar_resumen()
 
     def un_paso(self):
         self.pausa()
         self.avanzar(1)
+
+    def atras(self):
+        self.pausa()
+        s = self.solver
+        objetivo = max(0, s.expandidos - 1)
+        s.reset()
+        for _ in range(objetivo):
+            s.paso()
+        self.dibujar()
+        self.app.actualizar_resumen()
 
     def alternar(self):
         if self.temporizador:
@@ -245,7 +372,10 @@ class Panel(ttk.LabelFrame):
         self.pausa()
         self.solver.reset()
         self.dibujar()
-        self.app.ocultar_resumen()
+        self.app.actualizar_resumen()
+
+    def corriendo(self):
+        return self.temporizador is not None
 
 
 # --------------------------------------------------------------- aplicación
@@ -254,76 +384,162 @@ class App:
         self.root = tk.Tk()
         self.root.title("Laberinto: BFS vs DFS paso a paso")
         self.root.resizable(False, False)
+        configurar_estilos(self.root)
+        # tamaño del laberinto en pantalla según la altura disponible
+        self.tam_canvas = max(280, min(440, self.root.winfo_screenheight() - 500))
+        self.modo_pintura = 1
+        self.lab = None
+        self.v_vel = tk.StringVar(value="5")
 
-        barra = ttk.Frame(self.root, padding=8)
-        barra.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Label(barra, text="Tamaño:").pack(side="left")
+        # encabezado
+        enc = tk.Frame(self.root, bg=COLORES["pared"], padx=16, pady=10)
+        enc.grid(row=0, column=0, columnspan=3, sticky="ew")
+        tk.Label(enc, text="Búsqueda ciega en un laberinto", bg=COLORES["pared"], fg="#ffffff",
+                 font=(FUENTE, 15, "bold")).pack(anchor="w")
+        tk.Label(enc, text="BFS (anchura) vs DFS (profundidad), paso a paso", bg=COLORES["pared"],
+                 fg="#9ca3af", font=(FUENTE, 9)).pack(anchor="w")
+
+        # barra de herramientas (una sola fila)
+        barra = tk.Frame(self.root, bg=BG, padx=12, pady=8)
+        barra.grid(row=1, column=0, columnspan=3, sticky="ew")
+        tk.Label(barra, text="Tamaño", bg=BG, fg=GRIS, font=(FUENTE, 9)).pack(side="left")
         self.tam = ttk.Combobox(barra, values=[15, 21, 31, 41], width=4, state="readonly")
         self.tam.set(21)
-        self.tam.pack(side="left", padx=(4, 10))
-        self.tam.bind("<<ComboboxSelected>>", lambda e: self.nuevo())
-        ttk.Button(barra, text="Nuevo laberinto", command=self.nuevo).pack(side="left")
-        ttk.Label(barra, text="   Velocidad:").pack(side="left")
-        self.vel = tk.Scale(barra, from_=1, to=10, orient="horizontal", length=130, showvalue=False)
+        self.tam.pack(side="left", padx=(6, 12))
+        self.tam.bind("<<ComboboxSelected>>", lambda e: (self.nuevo(), self.root.focus_set()))
+        boton(barra, "⟳ Nuevo laberinto", self.nuevo, primario=True).pack(side="left")
+        tk.Label(barra, text="Velocidad", bg=BG, fg=GRIS, font=(FUENTE, 9)).pack(side="left", padx=(20, 6))
+        self.vel = ttk.Scale(barra, from_=1, to=10, orient="horizontal", length=120,
+                             command=lambda v: self.v_vel.set(str(round(float(v)))))
         self.vel.set(5)
         self.vel.pack(side="left")
-        ttk.Button(barra, text="▶ Ejecutar ambos", command=self.ambos_play).pack(side="left", padx=(10, 4))
-        ttk.Button(barra, text="Reiniciar ambos", command=self.ambos_reset).pack(side="left")
+        tk.Label(barra, textvariable=self.v_vel, bg=BG, fg=TEXTO, width=2,
+                 font=(FUENTE, 10, "bold")).pack(side="left", padx=(4, 0))
+        tk.Frame(barra, bg=BORDE, width=1, height=26).pack(side="left", padx=14)
+        boton(barra, "◀ Atrás ambos", self.ambos_atras).pack(side="left")
+        boton(barra, "Paso ambos ▶", self.ambos_paso).pack(side="left", padx=6)
+        boton(barra, "▶ Ejecutar ambos", self.ambos_play, primario=True).pack(side="left")
+        boton(barra, "Reiniciar ambos", self.ambos_reset).pack(side="left", padx=6)
 
+        # paneles
         self.bfs = Panel(self, "BFS", "BFS: búsqueda en anchura",
-                         "Frontera = cola (FIFO): expande el nodo más antiguo.")
+                         "Frontera = cola (FIFO): expande el nodo más antiguo.", COLORES["camino"])
         self.dfs = Panel(self, "DFS", "DFS: búsqueda en profundidad",
-                         "Frontera = pila (LIFO): expande el último nodo agregado.")
-        self.bfs.grid(row=1, column=0, padx=8, pady=4)
-        self.dfs.grid(row=1, column=1, padx=8, pady=4)
+                         "Frontera = pila (LIFO): expande el último nodo agregado.", COLORES["frontera"])
+        self.bfs.grid(row=2, column=0, padx=(12, 6), pady=(2, 8), sticky="n")
+        self.dfs.grid(row=2, column=1, padx=(6, 6), pady=(2, 8), sticky="n")
 
-        leyenda = ttk.Frame(self.root, padding=(8, 4))
-        leyenda.grid(row=2, column=0, columnspan=2, sticky="w")
+        # comparación: aparece a un lado cuando ambos terminan
+        self.lado = tk.Frame(self.root, bg=CARD, highlightbackground=BORDE, highlightthickness=1,
+                             padx=14, pady=12)
+        self.lado.grid(row=2, column=2, padx=(6, 12), pady=(2, 8), sticky="n")
+        self.lado.grid_remove()
+        tk.Label(self.lado, text="COMPARACIÓN", bg=CARD, fg=TEXTO,
+                 font=(FUENTE, 11, "bold")).pack(anchor="w")
+        self.v_res = tk.StringVar()
+        tk.Label(self.lado, textvariable=self.v_res, justify="left", anchor="w", bg=CARD, fg=TEXTO,
+                 font=(FUENTE, 10), wraplength=250).pack(anchor="w", pady=(6, 8))
+        self.grafica = tk.Canvas(self.lado, width=270, height=118, bg=CARD, highlightthickness=0)
+        self.grafica.pack()
+
+        # leyenda
+        leyenda = tk.Frame(self.root, bg=BG, padx=12)
+        leyenda.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         for nombre, clave in [("Inicio", "inicio"), ("Meta", "meta"), ("Nodo actual", "actual"),
                               ("Frontera", "frontera"), ("Explorado", "explorado"),
                               ("Camino final", "camino"), ("Pared", "pared")]:
-            tk.Label(leyenda, bg=COLORES[clave], width=2, relief="solid", bd=1).pack(side="left", padx=(8, 3))
-            ttk.Label(leyenda, text=nombre).pack(side="left")
+            tk.Label(leyenda, bg=COLORES[clave], width=2, relief="solid", bd=1).pack(side="left", padx=(0, 4))
+            tk.Label(leyenda, text=nombre, bg=BG, fg=GRIS, font=(FUENTE, 9)).pack(side="left", padx=(0, 14))
+        tk.Label(leyenda, text="Clic o arrastra sobre el laberinto para poner/quitar paredes",
+                 bg=BG, fg=GRIS, font=(FUENTE, 9, "italic")).pack(side="right")
 
-        self.v_res = tk.StringVar()
-        self.lbl_res = ttk.Label(self.root, textvariable=self.v_res, padding=8, justify="left")
-        self.lbl_res.grid(row=3, column=0, columnspan=2, sticky="w")
+        # atajos
+        self.root.bind("<space>", lambda e: self.ambos_alternar())
+        self.root.bind("<Right>", lambda e: self.ambos_paso())
+        self.root.bind("<Left>", lambda e: self.ambos_atras())
+        self.root.bind("<r>", lambda e: self.ambos_reset())
+        self.root.bind("<n>", lambda e: self.nuevo())
 
         self.nuevo()
 
     def velocidad(self):
-        return int(self.vel.get())
+        return int(round(float(self.vel.get())))
 
+    # -- laberinto compartido
     def nuevo(self):
-        lab = generar(int(self.tam.get()))
-        self.bfs.set_laberinto(lab)
-        self.dfs.set_laberinto(lab)
-        self.ocultar_resumen()
+        self.lab = generar(int(self.tam.get()))
+        self.bfs.set_laberinto(self.lab)
+        self.dfs.set_laberinto(self.lab)
+        self.actualizar_resumen()
 
+    def pintar(self, f, c):
+        if self.lab[f][c] == self.modo_pintura:
+            return
+        self.lab[f][c] = self.modo_pintura       # lista compartida por ambos paneles
+        self.ambos_reset()
+
+    # -- acciones sobre ambos
     def ambos_play(self):
         for p in (self.bfs, self.dfs):
             p.pausa()
             p.play()
 
+    def ambos_alternar(self):
+        if self.bfs.corriendo() or self.dfs.corriendo():
+            self.bfs.pausa()
+            self.dfs.pausa()
+        else:
+            self.ambos_play()
+
+    def ambos_paso(self):
+        for p in (self.bfs, self.dfs):
+            p.un_paso()
+
+    def ambos_atras(self):
+        for p in (self.bfs, self.dfs):
+            p.atras()
+
     def ambos_reset(self):
-        self.bfs.reiniciar()
-        self.dfs.reiniciar()
+        for p in (self.bfs, self.dfs):
+            p.pausa()
+            p.solver.reset()
+            p.dibujar()
+        self.actualizar_resumen()
 
-    def ocultar_resumen(self):
-        self.v_res.set("")
-
-    def resumen(self):
+    # -- comparación
+    def actualizar_resumen(self):
         b, d = self.bfs.solver, self.dfs.solver
-        if not (b.terminado and d.terminado and b.camino and d.camino):
+        self.grafica.delete("all")
+        if not (b.terminado and d.terminado):
+            self.lado.grid_remove()
+            return
+        self.lado.grid()
+        if not (b.camino and d.camino):
+            self.v_res.set("Sin camino entre el inicio y la meta (revisa las paredes que pusiste).")
             return
         lb, ld = len(b.camino) - 1, len(d.camino) - 1
-        texto = (f"COMPARACIÓN\nBFS: camino de {lb} pasos, {b.expandidos} nodos expandidos.\n"
-                 f"DFS: camino de {ld} pasos, {d.expandidos} nodos expandidos.\n")
-        if ld > lb:
-            texto += f"BFS encontró el camino más corto ({ld - lb} pasos menos que DFS)."
-        else:
-            texto += "En este laberinto ambos encontraron un camino igual de corto."
+        texto = (f"BFS: camino de {lb} pasos, {b.expandidos} nodos expandidos.\n"
+                 f"DFS: camino de {ld} pasos, {d.expandidos} nodos expandidos.\n\n")
+        texto += (f"BFS encontró el camino más corto ({ld - lb} pasos menos que DFS)."
+                  if ld > lb else "En este laberinto ambos encontraron un camino igual de corto.")
         self.v_res.set(texto)
+        self.dibujar_grafica([("Pasos del camino", lb, ld), ("Nodos expandidos", b.expandidos, d.expandidos)])
+
+    def dibujar_grafica(self, metricas):
+        g = self.grafica
+        ancho_max = 270 - 36 - 50
+        y = 4
+        for nombre, vb, vd in metricas:
+            g.create_text(2, y, anchor="nw", text=nombre, font=(FUENTE, 9, "bold"), fill=TEXTO)
+            y += 16
+            mx = max(vb, vd, 1)
+            for etiqueta, val, col in (("BFS", vb, COLORES["camino"]), ("DFS", vd, COLORES["frontera"])):
+                g.create_text(2, y + 7, anchor="w", text=etiqueta, font=(FUENTE, 8), fill=GRIS)
+                largo = max(2, int(ancho_max * val / mx))
+                g.create_rectangle(36, y, 36 + largo, y + 14, fill=col, outline="")
+                g.create_text(40 + largo, y + 7, anchor="w", text=str(val), font=(FUENTE, 8), fill=TEXTO)
+                y += 18
+            y += 4
 
     def ejecutar(self):
         self.root.mainloop()
