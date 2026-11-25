@@ -1,0 +1,333 @@
+"""
+Aplicación de escritorio: búsqueda ciega en un laberinto (BFS vs DFS)
+---------------------------------------------------------------------
+Abre una ventana con dos paneles independientes (BFS y DFS) que resuelven
+el mismo laberinto paso a paso. Solo usa la biblioteca estándar de Python
+(tkinter), no hay que instalar nada.
+
+Uso:  python laberinto_app.py
+"""
+import random
+import tkinter as tk
+from collections import deque
+from tkinter import ttk
+
+DIRS = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+TAM_CANVAS = 460
+
+COLORES = {
+    "pared": "#1f2937",
+    "libre": "#ffffff",
+    "explorado": "#bfdbfe",
+    "frontera": "#fb923c",
+    "actual": "#facc15",
+    "camino": "#2563eb",
+    "inicio": "#16a34a",
+    "meta": "#dc2626",
+}
+
+# pasos por "tick" y retardo (ms) según la velocidad 1..10
+PASOS = [1, 1, 2, 3, 5, 8, 12, 20, 35, 60]
+
+
+def retardo(v):
+    return 300 if v == 1 else 120 if v == 2 else 50
+
+
+# ------------------------------------------------------------ laberinto
+def generar(n, prob_aperturas=0.08):
+    """Laberinto n x n (n impar): backtracking recursivo + paredes abiertas
+    al azar para que existan varios caminos."""
+    lab = [[1] * n for _ in range(n)]
+    pila = [(1, 1)]
+    lab[1][1] = 0
+    while pila:
+        f, c = pila[-1]
+        vec = []
+        for df, dc in DIRS:
+            nf, nc = f + 2 * df, c + 2 * dc
+            if 0 < nf < n - 1 and 0 < nc < n - 1 and lab[nf][nc] == 1:
+                vec.append((nf, nc, f + df, c + dc))
+        if vec:
+            nf, nc, pf, pc = random.choice(vec)
+            lab[pf][pc] = 0
+            lab[nf][nc] = 0
+            pila.append((nf, nc))
+        else:
+            pila.pop()
+    for f in range(1, n - 1):
+        for c in range(1, n - 1):
+            if lab[f][c] == 1 and random.random() < prob_aperturas:
+                lab[f][c] = 0
+    return lab
+
+
+# --------------------------------------------------------------- búsqueda
+class Solver:
+    """Búsqueda ciega que avanza de un nodo en un nodo.
+    BFS: frontera = cola (FIFO). DFS: frontera = pila (LIFO)."""
+
+    def __init__(self, lab, algoritmo):
+        self.lab = lab
+        self.n = len(lab)
+        self.algo = algoritmo
+        self.reset()
+
+    def reset(self):
+        self.inicio = (1, 1)
+        self.meta = (self.n - 2, self.n - 2)
+        self.frontera = deque([self.inicio])
+        self.padres = {self.inicio: None}
+        self.expandidos = 0
+        self.max_frontera = 1
+        self.actual = None
+        self.terminado = False
+        self.camino = None
+
+    def paso(self):
+        if self.terminado:
+            return
+        actual = self.frontera.popleft() if self.algo == "BFS" else self.frontera.pop()
+        self.actual = actual
+        self.expandidos += 1
+        if actual == self.meta:
+            camino, p = [], actual
+            while p is not None:
+                camino.append(p)
+                p = self.padres[p]
+            self.camino = camino[::-1]
+            self.terminado = True
+            self.actual = None
+            self.frontera.clear()
+            return
+        f, c = actual
+        for df, dc in DIRS:
+            v = (f + df, c + dc)
+            if (0 <= v[0] < self.n and 0 <= v[1] < self.n
+                    and self.lab[v[0]][v[1]] == 0 and v not in self.padres):
+                self.padres[v] = actual
+                self.frontera.append(v)
+        self.max_frontera = max(self.max_frontera, len(self.frontera))
+        if not self.frontera:
+            self.terminado = True
+
+
+# ------------------------------------------------------------------- panel
+class Panel(ttk.LabelFrame):
+    def __init__(self, app, algo, titulo, descripcion):
+        super().__init__(app.root, text=titulo, padding=8)
+        self.app = app
+        self.algo = algo
+        self.temporizador = None
+        self.solver = None
+        self.celdas = []
+        self.cache = {}
+
+        ttk.Label(self, text=descripcion, foreground="#555").pack(anchor="w")
+        self.canvas = tk.Canvas(self, width=TAM_CANVAS, height=TAM_CANVAS,
+                                highlightthickness=1, highlightbackground="#bbb")
+        self.canvas.pack(pady=6)
+
+        fila = ttk.Frame(self)
+        fila.pack(fill="x")
+        self.b_paso = ttk.Button(fila, text="Paso", command=self.un_paso)
+        self.b_paso.pack(side="left")
+        self.b_play = ttk.Button(fila, text="▶ Play", command=self.alternar)
+        self.b_play.pack(side="left", padx=6)
+        ttk.Button(fila, text="Reiniciar", command=self.reiniciar).pack(side="left")
+
+        self.v_exp = tk.StringVar()
+        self.v_fr = tk.StringVar()
+        self.v_msg = tk.StringVar()
+        ttk.Label(self, textvariable=self.v_exp).pack(anchor="w", pady=(8, 0))
+        ttk.Label(self, textvariable=self.v_fr).pack(anchor="w")
+        ttk.Label(self, textvariable=self.v_msg, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(4, 0))
+
+    # -- laberinto nuevo
+    def set_laberinto(self, lab):
+        self.pausa()
+        self.solver = Solver(lab, self.algo)
+        n = len(lab)
+        celda = TAM_CANVAS // n
+        self.canvas.delete("all")
+        self.canvas.config(width=celda * n, height=celda * n)
+        self.celdas = []
+        self.cache = {}
+        for f in range(n):
+            fila = []
+            for c in range(n):
+                item = self.canvas.create_rectangle(
+                    c * celda, f * celda, (c + 1) * celda, (f + 1) * celda,
+                    fill=COLORES["libre"], outline="")
+                fila.append(item)
+            self.celdas.append(fila)
+        self.dibujar()
+
+    def color_de(self, pos, s, frontera, en_camino):
+        f, c = pos
+        if s.lab[f][c] == 1:
+            return COLORES["pared"]
+        if pos == s.inicio:
+            return COLORES["inicio"]
+        if pos == s.meta:
+            return COLORES["meta"]
+        if pos in en_camino:
+            return COLORES["camino"]
+        if pos == s.actual:
+            return COLORES["actual"]
+        if pos in frontera:
+            return COLORES["frontera"]
+        if pos in s.padres:
+            return COLORES["explorado"]
+        return COLORES["libre"]
+
+    def dibujar(self):
+        s = self.solver
+        frontera = set(s.frontera)
+        en_camino = set(s.camino) if s.camino else set()
+        for f in range(s.n):
+            for c in range(s.n):
+                col = self.color_de((f, c), s, frontera, en_camino)
+                if self.cache.get((f, c)) != col:
+                    self.canvas.itemconfig(self.celdas[f][c], fill=col)
+                    self.cache[(f, c)] = col
+        self.v_exp.set(f"Nodos expandidos: {s.expandidos}")
+        self.v_fr.set(f"Frontera actual: {len(s.frontera)}   (máxima: {s.max_frontera})")
+        if s.terminado:
+            self.v_msg.set(f"Meta encontrada. Camino de {len(s.camino) - 1} pasos."
+                           if s.camino else "No hay camino.")
+        else:
+            self.v_msg.set("Buscando…" if s.expandidos else "Listo para comenzar.")
+        estado = "disabled" if s.terminado else "normal"
+        self.b_paso.config(state=estado)
+        self.b_play.config(state=estado)
+
+    # -- control
+    def avanzar(self, k):
+        for _ in range(k):
+            if self.solver.terminado:
+                break
+            self.solver.paso()
+        self.dibujar()
+        if self.solver.terminado:
+            self.pausa()
+            self.app.resumen()
+
+    def un_paso(self):
+        self.pausa()
+        self.avanzar(1)
+
+    def alternar(self):
+        if self.temporizador:
+            self.pausa()
+        else:
+            self.play()
+
+    def play(self):
+        if self.solver.terminado:
+            return
+        self.b_play.config(text="⏸ Pausa")
+        self.tick()
+
+    def tick(self):
+        v = self.app.velocidad()
+        self.avanzar(PASOS[v - 1])
+        if not self.solver.terminado:
+            self.temporizador = self.after(retardo(v), self.tick)
+
+    def pausa(self):
+        if self.temporizador:
+            self.after_cancel(self.temporizador)
+            self.temporizador = None
+        self.b_play.config(text="▶ Play")
+
+    def reiniciar(self):
+        self.pausa()
+        self.solver.reset()
+        self.dibujar()
+        self.app.ocultar_resumen()
+
+
+# --------------------------------------------------------------- aplicación
+class App:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Laberinto: BFS vs DFS paso a paso")
+        self.root.resizable(False, False)
+
+        barra = ttk.Frame(self.root, padding=8)
+        barra.grid(row=0, column=0, columnspan=2, sticky="ew")
+        ttk.Label(barra, text="Tamaño:").pack(side="left")
+        self.tam = ttk.Combobox(barra, values=[15, 21, 31, 41], width=4, state="readonly")
+        self.tam.set(21)
+        self.tam.pack(side="left", padx=(4, 10))
+        self.tam.bind("<<ComboboxSelected>>", lambda e: self.nuevo())
+        ttk.Button(barra, text="Nuevo laberinto", command=self.nuevo).pack(side="left")
+        ttk.Label(barra, text="   Velocidad:").pack(side="left")
+        self.vel = tk.Scale(barra, from_=1, to=10, orient="horizontal", length=130, showvalue=False)
+        self.vel.set(5)
+        self.vel.pack(side="left")
+        ttk.Button(barra, text="▶ Ejecutar ambos", command=self.ambos_play).pack(side="left", padx=(10, 4))
+        ttk.Button(barra, text="Reiniciar ambos", command=self.ambos_reset).pack(side="left")
+
+        self.bfs = Panel(self, "BFS", "BFS: búsqueda en anchura",
+                         "Frontera = cola (FIFO): expande el nodo más antiguo.")
+        self.dfs = Panel(self, "DFS", "DFS: búsqueda en profundidad",
+                         "Frontera = pila (LIFO): expande el último nodo agregado.")
+        self.bfs.grid(row=1, column=0, padx=8, pady=4)
+        self.dfs.grid(row=1, column=1, padx=8, pady=4)
+
+        leyenda = ttk.Frame(self.root, padding=(8, 4))
+        leyenda.grid(row=2, column=0, columnspan=2, sticky="w")
+        for nombre, clave in [("Inicio", "inicio"), ("Meta", "meta"), ("Nodo actual", "actual"),
+                              ("Frontera", "frontera"), ("Explorado", "explorado"),
+                              ("Camino final", "camino"), ("Pared", "pared")]:
+            tk.Label(leyenda, bg=COLORES[clave], width=2, relief="solid", bd=1).pack(side="left", padx=(8, 3))
+            ttk.Label(leyenda, text=nombre).pack(side="left")
+
+        self.v_res = tk.StringVar()
+        self.lbl_res = ttk.Label(self.root, textvariable=self.v_res, padding=8, justify="left")
+        self.lbl_res.grid(row=3, column=0, columnspan=2, sticky="w")
+
+        self.nuevo()
+
+    def velocidad(self):
+        return int(self.vel.get())
+
+    def nuevo(self):
+        lab = generar(int(self.tam.get()))
+        self.bfs.set_laberinto(lab)
+        self.dfs.set_laberinto(lab)
+        self.ocultar_resumen()
+
+    def ambos_play(self):
+        for p in (self.bfs, self.dfs):
+            p.pausa()
+            p.play()
+
+    def ambos_reset(self):
+        self.bfs.reiniciar()
+        self.dfs.reiniciar()
+
+    def ocultar_resumen(self):
+        self.v_res.set("")
+
+    def resumen(self):
+        b, d = self.bfs.solver, self.dfs.solver
+        if not (b.terminado and d.terminado and b.camino and d.camino):
+            return
+        lb, ld = len(b.camino) - 1, len(d.camino) - 1
+        texto = (f"COMPARACIÓN\nBFS: camino de {lb} pasos, {b.expandidos} nodos expandidos.\n"
+                 f"DFS: camino de {ld} pasos, {d.expandidos} nodos expandidos.\n")
+        if ld > lb:
+            texto += f"BFS encontró el camino más corto ({ld - lb} pasos menos que DFS)."
+        else:
+            texto += "En este laberinto ambos encontraron un camino igual de corto."
+        self.v_res.set(texto)
+
+    def ejecutar(self):
+        self.root.mainloop()
+
+
+if __name__ == "__main__":
+    App().ejecutar()
